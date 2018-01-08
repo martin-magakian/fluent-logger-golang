@@ -54,6 +54,11 @@ type Config struct {
 	SubSecondPrecision bool `json:"sub_second_precision"`
 }
 
+// Stats contains information about Fluent client.
+type Stats struct {
+	PendingLogs uint32 // number of logs waiting to be sent
+}
+
 type Fluent struct {
 	Config
 
@@ -339,4 +344,16 @@ func (f *Fluent) write(data []byte) error {
 	}
 
 	return fmt.Errorf("fluent#write: failed to reconnect, max retry: %v", f.Config.MaxRetry)
+}
+
+// Stats return statistics about Fluent
+func (f *Fluent) Stats() interface{} {
+	if f.Config.Async {
+		return &Stats{
+			PendingLogs: uint32(len(f.pending)),
+		}
+	}
+	return &Stats{
+		PendingLogs: uint32(0),
+	}
 }
