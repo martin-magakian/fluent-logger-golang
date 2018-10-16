@@ -22,6 +22,7 @@ const (
 	defaultPort                   = 24224
 	defaultTimeout                = 3 * time.Second
 	defaultWriteTimeout           = time.Duration(0) // Write() will not time out
+	defaultSocketMaxDuration      = time.Duration(0) // Socket can stay connected forever
 	defaultBufferLimit            = 8 * 1024
 	defaultRetryWait              = 500
 	defaultMaxRetryWait           = 60000
@@ -33,18 +34,19 @@ const (
 )
 
 type Config struct {
-	FluentPort       int           `json:"fluent_port"`
-	FluentHost       string        `json:"fluent_host"`
-	FluentNetwork    string        `json:"fluent_network"`
-	FluentSocketPath string        `json:"fluent_socket_path"`
-	Timeout          time.Duration `json:"timeout"`
-	WriteTimeout     time.Duration `json:"write_timeout"`
-	BufferLimit      int           `json:"buffer_limit"`
-	RetryWait        int           `json:"retry_wait"`
-	MaxRetry         int           `json:"max_retry"`
-	MaxRetryWait     int           `json:"max_retry_wait"`
-	TagPrefix        string        `json:"tag_prefix"`
-	Async            bool          `json:"async"`
+	FluentPort        int           `json:"fluent_port"`
+	FluentHost        string        `json:"fluent_host"`
+	FluentNetwork     string        `json:"fluent_network"`
+	FluentSocketPath  string        `json:"fluent_socket_path"`
+	Timeout           time.Duration `json:"timeout"`
+	WriteTimeout      time.Duration `json:"write_timeout"`
+	SocketMaxDuration time.Duration `json:"socket_max_duration"`
+	BufferLimit       int           `json:"buffer_limit"`
+	RetryWait         int           `json:"retry_wait"`
+	MaxRetry          int           `json:"max_retry"`
+	MaxRetryWait      int           `json:"max_retry_wait"`
+	TagPrefix         string        `json:"tag_prefix"`
+	Async             bool          `json:"async"`
 	// Deprecated: Use Async instead
 	AsyncConnect  bool `json:"async_connect"`
 	MarshalAsJSON bool `json:"marshal_as_json"`
@@ -65,8 +67,9 @@ type Fluent struct {
 	pending chan []byte
 	wg      sync.WaitGroup
 
-	muconn sync.Mutex
-	conn   net.Conn
+	muconn             sync.Mutex
+	conn               net.Conn
+	connExpirationTime time.Time
 }
 
 // New creates a new Logger.
@@ -88,6 +91,9 @@ func New(config Config) (f *Fluent, err error) {
 	}
 	if config.WriteTimeout == 0 {
 		config.WriteTimeout = defaultWriteTimeout
+	}
+	if config.SocketMaxDuration == 0 {
+		config.SocketMaxDuration = defaultSocketMaxDuration
 	}
 	if config.BufferLimit == 0 {
 		config.BufferLimit = defaultBufferLimit
@@ -285,6 +291,9 @@ func (f *Fluent) connect() (err error) {
 	default:
 		err = net.UnknownNetworkError(f.Config.FluentNetwork)
 	}
+	if err == nil {
+		f.connExpirationTime = time.Now().Add(f.Config.SocketMaxDuration)
+	}
 	return err
 }
 
@@ -311,6 +320,11 @@ func e(x, y float64) int {
 func (f *Fluent) write(data []byte) error {
 
 	for i := 0; i < f.Config.MaxRetry; i++ {
+
+		// Disconnect if connected for too long
+		if time.Duration(0) < f.Config.SocketMaxDuration && time.Now().Sub(f.connExpirationTime) > 0 {
+			f.close()
+		}
 
 		// Connect if needed
 		f.muconn.Lock()
